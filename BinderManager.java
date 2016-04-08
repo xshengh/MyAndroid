@@ -20,9 +20,8 @@ public class BinderManager {
 
     private Context mContext;
     private static BinderManager binderManager;
-    // binder的缓存，key是Action
-    private Map<String, BinderTask> binderCache = Collections
-            .synchronizedMap(new HashMap<String, BinderTask>());
+    //binder的缓存，key是Action
+    private Map<String, BinderTask> binderCache = Collections.synchronizedMap(new HashMap<String, BinderTask>());
 
     public interface BindServiceCallback {
         public boolean onGetBinder(IBinder service);
@@ -31,13 +30,12 @@ public class BinderManager {
     private BinderManager(Context context) {
         mContext = context.getApplicationContext();
     }
-
+    
     public static void init(Context context) {
         if (binderManager == null) {
             binderManager = new BinderManager(context);
         }
     }
-
     public synchronized static BinderManager getInstance() {
         if (binderManager == null) {
             throw new RuntimeException("please init BinderManager first");
@@ -46,54 +44,58 @@ public class BinderManager {
     }
 
     class BinderTask {
-        // intent的action
+        //intent的action
         String action;
-        // intent中setPackage设置的值
+        //intent中setPackage设置的值
         String actionPackage;
-        // 是否已经执行绑定，不是是否已经绑定
+        //是否已经执行绑定，不是是否已经绑定
         boolean isExecBind = false;
-        // 绑定的次数
+        //绑定的次数
         int bindCount = 0;
-        // 绑定的binder，如果绑定完成，则不为空
+        //绑定的binder，如果绑定完成，则不为空
         IBinder binder;
-        // 用于绑定这个binder的conn
+        //用于绑定这个binder的conn
         BindServiceConn bindServiceConn;
-        // 这个binder的锁
+        //这个binder的锁
         Object binderLock = new Object();
     }
-
-    public void getService(String action, String packageName, final BindServiceCallback callback) {
+    //TODO 加入超时机制
+    public boolean getService(String action, String packageName, final BindServiceCallback callback) {
+        boolean isSuccess = true;
         BinderTask binderTask = binderCache.get(action);
-        if (binderTask == null) {
+        if(binderTask == null) {
             binderTask = new BinderTask();
             binderTask.action = action;
             binderTask.actionPackage = packageName;
             binderTask.bindServiceConn = new BindServiceConn(action);
             binderCache.put(binderTask.action, binderTask);
         }
-        binderTask.bindCount++;
+        binderTask.bindCount ++;
         android.util.Log.i(TAG, "action:" + action + "   bindCount : " + binderTask.bindCount);
         if (binderTask.binder != null) {
-            invokeCallback(callback, binderTask, binderTask.binder);
+            android.util.Log.i(TAG, "find cached binder:" + binderTask.binder + " thread:" + Thread.currentThread());
+            invokeCallback(callback,binderTask,binderTask.binder);
         } else {
             synchronized (binderTask.binderLock) {
-                // 进到同步代码里，可能已经获取到了，先取一次，获取到就直接返回
+                //进到同步代码里，可能已经获取到了，先取一次，获取到就直接返回
                 binderTask = binderCache.get(action);
                 if (binderTask != null && binderTask.binder != null) {
-                    invokeCallback(callback, binderTask, binderTask.binder);
-                    return;
+                    android.util.Log.i(TAG, "find cached binder in synchronized code:" + binderTask.binder + " thread:" + Thread.currentThread());
+                    invokeCallback(callback,binderTask,binderTask.binder);
+                    return isSuccess;
                 }
-                // 依然没获取到，加入callback队列
+                //依然没获取到，加入callback队列
                 binderTask.bindServiceConn.addCallback(callback);
                 if (!binderTask.isExecBind) {
                     Intent intent = new Intent(action);
                     intent.setPackage(binderTask.actionPackage);
-                    mContext.bindService(intent, binderTask.bindServiceConn,
-                            Service.BIND_AUTO_CREATE);
+                    android.util.Log.i(TAG, "cant find cached binder，bind service"  + " thread:" + Thread.currentThread());
+                    isSuccess = mContext.bindService(intent, binderTask.bindServiceConn, Service.BIND_AUTO_CREATE);
                     binderTask.isExecBind = true;
                 }
             }
         }
+        return isSuccess;
     }
 
     public void releaseService(String action) {
@@ -101,12 +103,11 @@ public class BinderManager {
         releaseService(binderTask);
     }
 
-    public void releaseService(BinderTask binderTask) {
-        if (binderTask != null) {
+    private void releaseService(BinderTask binderTask) {
+        if(binderTask != null) {
             synchronized (binderTask.binderLock) {
-                binderTask.bindCount--;
-                android.util.Log.i(TAG,
-                        "action:" + binderTask.action + "   bindCount : " + binderTask.bindCount);
+                binderTask.bindCount --;
+                android.util.Log.i(TAG, "action:" + binderTask.action + "   bindCount : " + binderTask.bindCount);
                 if (binderTask.bindCount == 0) {
                     mContext.unbindService(binderTask.bindServiceConn);
                     binderCache.remove(binderTask.action);
@@ -115,10 +116,9 @@ public class BinderManager {
         }
     }
 
-    private void invokeCallback(BindServiceCallback callback, BinderTask binderTask,
-            IBinder service) {
+    private void invokeCallback(BindServiceCallback callback,BinderTask binderTask,IBinder service) {
         if (callback != null) {
-            if (callback.onGetBinder(service)) {
+            if(callback.onGetBinder(service)) {
                 releaseService(binderTask);
             }
         }
@@ -141,13 +141,13 @@ public class BinderManager {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             BinderTask binderTask = binderCache.get(action);
-            if (binderTask != null) {
+            if(binderTask != null) {
                 binderTask.binder = service;
                 binderTask.isExecBind = true;
             }
             synchronized (binderTask.binderLock) {
                 for (BindServiceCallback callback : callbackList) {
-                    invokeCallback(callback, binderTask, service);
+                    invokeCallback(callback,binderTask,service);
                 }
                 callbackList.clear();
             }
@@ -156,7 +156,7 @@ public class BinderManager {
         @Override
         public void onServiceDisconnected(ComponentName name) {
             BinderTask binderTask = binderCache.get(action);
-            if (binderTask != null) {
+            if(binderTask != null) {
                 binderTask.binder = null;
                 binderTask.isExecBind = false;
             }
